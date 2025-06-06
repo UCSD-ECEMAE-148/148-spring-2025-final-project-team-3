@@ -86,11 +86,11 @@ class ObjDetectionNode(Node):
 
         # === ROBOFLOWOAK INITIALIZATION ===
         self.rf = RoboflowOak(
-            model="garbage-detection-2",    # Your garbage detection model
-            confidence=0.05,                # Confidence threshold
-            overlap=0.5,                    # NMS overlap threshold
+            model="ece-148-final-project",    # Your garbage detection model
+            confidence=0.95,                # Confidence threshold
+            overlap=0.01,                    # NMS overlap threshold
             version="1", 
-            api_key="R4jbOhEOxwSSDOBryrhH", # Your Roboflow API key
+            api_key="Tv55RvxSLtK3OR0qU9Hb", # Your Roboflow API key
             rgb=True,                       # Whether to use RGB stream
             depth=True,                     # Whether to use depth stream
             device=None,                    # Auto device selection
@@ -99,7 +99,7 @@ class ObjDetectionNode(Node):
 
         # === DETECTION PARAMETERS ===
         self.target_class_name = "garbage"  # The class name we're looking for
-        self.target_class_id = 0            # Assuming garbage has class_id 0
+        self.target_class = 0            # Assuming garbage has class_id 0
         
         # === CREATE A TIMER CALLBACK ===
         # Calls self.run_model every 0.1 seconds (10Hz)
@@ -114,6 +114,21 @@ class ObjDetectionNode(Node):
         t0 = time.time()
 
         try:
+            cv2.imshow("Frame", frame)
+            cv2.waitKey(1)
+
+             # Run detection on OAK-D
+            result, frame, raw_frame, depth = self.rf.detect()
+            predictions = result["predictions"]
+            self.get_logger().info(f'Detections: {len(predictions)}')
+            x = [pred.x for pred in predictions]
+            y = [pred.y for pred in predictions]
+            self.get_logger().info(f'Predictions: {x}, {y}')
+        except Exception as e:
+            self.get_logger().error(f'Error during detection: {str(e)}')
+            return
+
+        try:
             # Run detection on OAK-D
             result, frame, raw_frame, depth = self.rf.detect()
             predictions = result["predictions"]
@@ -125,7 +140,7 @@ class ObjDetectionNode(Node):
                 self.get_logger().info(f'Camera initialized: {self.image_width}x{self.image_height}')
 
             # Filter predictions for garbage only
-            garbage_predictions = [pred for pred in predictions if pred.class_id == self.target_class_id]
+            garbage_predictions = [pred for pred in predictions if pred.class_id == self.target_class]
 
             # Publish detection flag
             detection_flag_msg = Bool()
@@ -322,7 +337,7 @@ class ObjDetectionNode(Node):
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
         # Prepare label text
-        label = f"{prediction.class_name} {prediction.confidence:.2f}"
+        label = f"{self.target_class_name} {prediction.confidence:.2f}"
         
         # Add depth information if available
         if depth_frame is not None:
