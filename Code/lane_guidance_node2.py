@@ -55,7 +55,7 @@ class PathPlanner(Node):
                 ('error_threshold', 0.15),
                 ('zero_throttle',0.0),
                 ('max_throttle', 0.2),
-                ('min_throttle', 0.1),
+                ('min_throttle', 0.2),
                 ('max_right_steering', 1.0),
                 ('max_left_steering', -1.0),
                 ('depth_threshold', 0.2),  # meters - stop if obstacle closer than this
