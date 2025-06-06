@@ -87,7 +87,7 @@ class ObjDetectionNode(Node):
         # === ROBOFLOWOAK INITIALIZATION ===
         self.rf = RoboflowOak(
             model="ece-148-final-project",    # Your garbage detection model
-            confidence=0.95,                # Confidence threshold
+            confidence=0.79,                # Confidence threshold
             overlap=0.01,                    # NMS overlap threshold
             version="1", 
             api_key="Tv55RvxSLtK3OR0qU9Hb", # Your Roboflow API key
