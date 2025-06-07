@@ -34,7 +34,7 @@ class ObjDetectionNode(Node):
         # NEW: Publisher for centroid error (steering value) - matches lane detection format
         self.centroid_error_publisher = self.create_publisher(
             Float32,
-            '/object_detections/steering_error',
+            '/object_detections/centroid',
             10
         )
 
@@ -112,18 +112,25 @@ class ObjDetectionNode(Node):
         Main detection loop - runs inference and publishes results
         """
         t0 = time.time()
-
+        # Check if the RoboflowOAK instance is ready
+        
         try:
-            cv2.imshow("Frame", frame)
-            cv2.waitKey(1)
+            
 
              # Run detection on OAK-D
             result, frame, raw_frame, depth = self.rf.detect()
+            self.publish_image(frame) #Image should be published first so that image topic gets unannoted image regardless of whether there are detections or not
+            if result is None or frame is None:
+                self.get_logger().warn("No result or frame received from RoboflowOAK")
+                return
             predictions = result["predictions"]
+            
             self.get_logger().info(f'Detections: {len(predictions)}')
             x = [pred.x for pred in predictions]
             y = [pred.y for pred in predictions]
             self.get_logger().info(f'Predictions: {x}, {y}')
+            cv2.imshow("Frame", frame)
+            cv2.waitKey(1)
         except Exception as e:
             self.get_logger().error(f'Error during detection: {str(e)}')
             return
@@ -139,10 +146,14 @@ class ObjDetectionNode(Node):
                 self.camera_init = True
                 self.get_logger().info(f'Camera initialized: {self.image_width}x{self.image_height}')
 
-            # Filter predictions for garbage only
-            garbage_predictions = [pred for pred in predictions if pred.class_id == self.target_class]
+            #instead of using class_id, we can check if any predictions were made since there is only one class
+            if not predictions:
+                self.get_logger().info("No predictions made")
+                return
+            
+            garbage_predictions = [pred for pred in predictions]        #Since we only have one class, we can just use all predictions
 
-            # Publish detection flag
+            # Publish detection flag  (keeping this just in case we want to use it later)
             detection_flag_msg = Bool()
             detection_flag_msg.data = len(garbage_predictions) > 0
             self.detection_flag_pub.publish(detection_flag_msg)
@@ -166,7 +177,7 @@ class ObjDetectionNode(Node):
                 self.draw_steering_visualization(frame, garbage_predictions)
 
             # Publish annotated image
-            self.publish_image(frame)
+            
             
             # Publish depth image
             if depth is not None:
