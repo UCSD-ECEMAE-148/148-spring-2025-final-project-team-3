@@ -6,7 +6,6 @@ from rclpy.node import Node  # Node class for creating ROS 2 nodes
 # Message types we'll publish
 from sensor_msgs.msg import Image  # Standard ROS Image message
 from geometry_msgs.msg import PointStamped
-from std_msgs.msg import Float32Stamped
 from std_msgs.msg import Bool, Float32  # Added Float32 for centroid error
 
 # OpenCV bridge for converting images between ROS and OpenCV
@@ -34,7 +33,7 @@ class ObjDetectionNode(Node):
 
         # NEW: Publisher for centroid error (steering value) - matches lane detection format
         self.centroid_error_publisher = self.create_publisher(
-            Float32Stamped,
+            Float32,
             '/object_detections/centroid',
             10
         )
@@ -48,7 +47,7 @@ class ObjDetectionNode(Node):
 
         # Publisher for the depth map
         self.depth_pub = self.create_publisher(
-            Image,
+            Float32,
             '/object_detections/depth',
             10
         )
@@ -409,10 +408,8 @@ class ObjDetectionNode(Node):
                 #cast to float32 if needed
                 obj_depth = obj_depth.astype(np.float32)
 
-            depth_point_msg = Float32Stamped()
-            depth_point_msg.data = obj_depth  # the depth value at the object’s center
-            depth_point_msg.header.stamp = self.get_clock().now().to_msg()
-            depth_point_msg.header.frame_id = 'oakd_camera_frame'
+            depth_point_msg = Float32()
+            depth_point_msg.data = obj_depth
 
             self.depth_pub.publish(depth_point_msg)
         except Exception as e:

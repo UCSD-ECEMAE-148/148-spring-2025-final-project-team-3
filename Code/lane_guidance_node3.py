@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int32, Int32MultiArray, Bool, Float32Stamped
+from std_msgs.msg import Float32, Int32, Int32MultiArray, Bool
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
@@ -14,7 +14,7 @@ NODE_NAME = 'lane_guidance_node'
 CENTROID_TOPIC_NAME = '/centroid'
 ACTUATOR_TOPIC_NAME = '/cmd_vel'
 OBJ_CENTROID_TOPIC_NAME = '/object_detections/centroid'
-DEPTH_TOPIC_NAME = '/object_detection/depth'  # Depth topic from object detection node
+DEPTH_TOPIC_NAME = '/object_detections/depth'  # Depth topic from object detection node
 
 class PathPlanner(Node):
     def __init__(self):
@@ -36,7 +36,7 @@ class PathPlanner(Node):
         
         # Subscribe to depth topic for obstacle detection
         self.depth_subscriber = self.create_subscription(
-            Float32Stamped,
+            Float32,
             DEPTH_TOPIC_NAME,
             self.depth_callback,
             10
@@ -193,7 +193,7 @@ class PathPlanner(Node):
     def depth_callback(self, msg):
         """Process depth value for obstacle detection"""
         try:
-            # Extract the single depth value from Float32Stamped message
+            # Extract the single depth value from Float32 message
             depth_value = msg.data
             self.last_depth_value = depth_value
             
