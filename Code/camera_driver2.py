@@ -414,7 +414,7 @@ class ObjDetectionNode(Node):
             depth_point_msg.header.stamp = self.get_clock().now().to_msg()
             depth_point_msg.header.frame_id = 'oakd_camera_frame'
 
-            self.depth_point_pub.publish(depth_point_msg)
+            self.depth_pub.publish(depth_point_msg)
         except Exception as e:
             self.get_logger().error(f'Depth publishing error: {str(e)}')
 
