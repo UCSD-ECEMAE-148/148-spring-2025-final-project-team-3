@@ -6,6 +6,7 @@ from rclpy.node import Node  # Node class for creating ROS 2 nodes
 # Message types we'll publish
 from sensor_msgs.msg import Image  # Standard ROS Image message
 from geometry_msgs.msg import PointStamped
+from std_msgs.msg import Float32Stamped
 from std_msgs.msg import Bool, Float32  # Added Float32 for centroid error
 
 # OpenCV bridge for converting images between ROS and OpenCV
@@ -33,7 +34,7 @@ class ObjDetectionNode(Node):
 
         # NEW: Publisher for centroid error (steering value) - matches lane detection format
         self.centroid_error_publisher = self.create_publisher(
-            Float32,
+            Float32Stamped,
             '/object_detections/centroid',
             10
         )
@@ -150,9 +151,9 @@ class ObjDetectionNode(Node):
             if not predictions:
                 self.get_logger().info("No predictions made")
                 return
-            
-            garbage_predictions = [pred for pred in predictions]        #Since we only have one class, we can just use all predictions
-
+             
+            #Since we only have one class, we can just use all predictions (this line might be outdated but I don't want to change the naming later)
+            garbage_predictions = [pred for pred in predictions]       
             # Publish detection flag  (keeping this just in case we want to use it later)
             detection_flag_msg = Bool()
             detection_flag_msg.data = len(garbage_predictions) > 0
@@ -181,7 +182,15 @@ class ObjDetectionNode(Node):
             
             # Publish depth image
             if depth is not None:
-                self.publish_depth(depth)
+               for pred in predictions:
+                    x = int(pred.x)
+                    y = int(pred.y)
+
+                    if 0 <= y < depth.shape[0] and 0 <= x < depth.shape[1]:
+                        object_depth = depth[y, x]  # Access depth at center of bounding box
+                        print(f"{pred.class_name} detected at depth: {object_depth}")
+                    else:
+                        print("Object center is out of bounds")
 
             # Log performance
             t = time.time() - t0
@@ -386,21 +395,26 @@ class ObjDetectionNode(Node):
         except Exception as e:
             self.get_logger().error(f'Image publishing error: {str(e)}')
 
-    def publish_depth(self, depth_frame):
+    def publish_depth(self, obj_depth):    
         """
         Publish depth image
         """
+        if obj_depth is None:
+            self.get_logger().warn("No depth frame available")
+            return 
         try:
-            # Normalize depth for visualization if needed
-            if depth_frame.dtype != np.float32:
-                depth_normalized = depth_frame.astype(np.float32)
-            else:
-                depth_normalized = depth_frame
-                
-            depth_msg = self.bridge.cv2_to_imgmsg(depth_normalized, encoding='32FC1')
-            depth_msg.header.stamp = self.get_clock().now().to_msg()
-            depth_msg.header.frame_id = 'oakd_camera_frame'
-            self.depth_pub.publish(depth_msg)
+
+            if obj_depth.dtype != np.float32:
+                obj_depth = obj_depth / 1000.0
+                #cast to float32 if needed
+                obj_depth = obj_depth.astype(np.float32)
+
+            depth_point_msg = Float32Stamped()
+            depth_point_msg.data = obj_depth  # the depth value at the object’s center
+            depth_point_msg.header.stamp = self.get_clock().now().to_msg()
+            depth_point_msg.header.frame_id = 'oakd_camera_frame'
+
+            self.depth_point_pub.publish(depth_point_msg)
         except Exception as e:
             self.get_logger().error(f'Depth publishing error: {str(e)}')
 
