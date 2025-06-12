@@ -45,10 +45,10 @@ class ObjDetectionNode(Node):
             10
         )
 
-        # Publisher for the depth map
-        self.depth_pub = self.create_publisher(
+        # Publisher for the width information (replaces depth)
+        self.width_pub = self.create_publisher(
             Float32,
-            '/object_detections/depth',
+            '/object_detections/depth',  # Keep same topic name for compatibility
             10
         )
 
@@ -69,12 +69,16 @@ class ObjDetectionNode(Node):
             parameters=[
                 ('camera_centerline', 0.5),  # Camera center reference (0.5 = middle)
                 ('error_threshold', 0.15),   # Error threshold for steering decisions
-                ('target_selection_method', 'closest')  # 'closest', 'average', 'largest'
+                ('target_selection_method', 'closest'),  # 'closest', 'average', 'largest'
+                ('width_threshold', 200.0),  # Width threshold for obstacle detection (pixels)
+                ('min_width_for_detection', 0.0)  # Minimum width to consider valid detection
             ])
         
         self.camera_centerline = self.get_parameter('camera_centerline').value
         self.error_threshold = self.get_parameter('error_threshold').value
         self.target_selection_method = self.get_parameter('target_selection_method').value
+        self.width_threshold = self.get_parameter('width_threshold').value
+        self.min_width_for_detection = self.get_parameter('min_width_for_detection').value
         
         # Image dimensions (will be set when first frame arrives)
         self.image_width = 0
@@ -83,16 +87,19 @@ class ObjDetectionNode(Node):
         
         # Centroid error message
         self.centroid_error = Float32()
+        
+        # Width message (replaces depth)
+        self.width_msg = Float32()
 
         # === ROBOFLOWOAK INITIALIZATION ===
         self.rf = RoboflowOak(
-            model="ece-148-final-project",    # Your garbage detection model
-            confidence=0.79,                # Confidence threshold
+            model="garbage-dxrv3",    # Your garbage detection model
+            confidence=0.60,                # Confidence threshold
             overlap=0.01,                    # NMS overlap threshold
-            version="1", 
+            version="3", 
             api_key="Tv55RvxSLtK3OR0qU9Hb", # Your Roboflow API key
             rgb=True,                       # Whether to use RGB stream
-            depth=True,                     # Whether to use depth stream
+            depth=False,                    # Disable depth stream since we're not using it
             device=None,                    # Auto device selection
             blocking=True                   # Blocking detection call
         )
@@ -105,99 +112,106 @@ class ObjDetectionNode(Node):
         # Calls self.run_model every 0.1 seconds (10Hz)
         self.create_timer(0.1, self.run_model)
 
-        self.get_logger().info("Object Detection Node initialized - looking for garbage")
+        self.get_logger().info(f"Object Detection Node initialized - looking for garbage")
+        self.get_logger().info(f"Width threshold: {self.width_threshold} pixels")
+        self.get_logger().info(f"Minimum width for detection: {self.min_width_for_detection} pixels")
 
     def run_model(self):
         """
         Main detection loop - runs inference and publishes results
         """
         t0 = time.time()
-        # Check if the RoboflowOAK instance is ready
         
         try:
-            
-
-             # Run detection on OAK-D
+            # Run detection on OAK-D (depth=None since we disabled it)
             result, frame, raw_frame, depth = self.rf.detect()
-            self.publish_image(frame) #Image should be published first so that image topic gets unannoted image regardless of whether there are detections or not
+            
             if result is None or frame is None:
                 self.get_logger().warn("No result or frame received from RoboflowOAK")
                 return
+                
             predictions = result["predictions"]
             
-            self.get_logger().info(f'Detections: {len(predictions)}')
-            x = [pred.x for pred in predictions]
-            y = [pred.y for pred in predictions]
-            self.get_logger().info(f'Predictions: {x}, {y}')
-            cv2.imshow("Frame", frame)
-            cv2.waitKey(1)
-        except Exception as e:
-            self.get_logger().error(f'Error during detection: {str(e)}')
-            return
-
-        try:
-            # Run detection on OAK-D
-            result, frame, raw_frame, depth = self.rf.detect()
-            predictions = result["predictions"]
-
+            # Publish image first so that image topic gets frame regardless of detections
+            self.publish_image(frame)
+            
             # Initialize camera dimensions on first frame
             if not self.camera_init and frame is not None:
                 self.image_height, self.image_width = frame.shape[:2]
                 self.camera_init = True
                 self.get_logger().info(f'Camera initialized: {self.image_width}x{self.image_height}')
 
-            #instead of using class_id, we can check if any predictions were made since there is only one class
-            if not predictions:
-                self.get_logger().info("No predictions made")
-                return
+            # Filter predictions by minimum width
+            valid_predictions = []
+            for pred in predictions:
+                if pred.width >= self.min_width_for_detection:
+                    valid_predictions.append(pred)
+                    
+            # Log detection info
+            self.get_logger().info(f'Total detections: {len(predictions)}, Valid detections: {len(valid_predictions)}')
+            
+            # Log width information for all valid predictions
+            if valid_predictions:
+                widths = [pred.width for pred in valid_predictions]
+                self.get_logger().info(f'Detection widths: {widths}')
+            
+            # Since we only have one class, we can just use all valid predictions
+            garbage_predictions = valid_predictions
              
-            #Since we only have one class, we can just use all predictions (this line might be outdated but I don't want to change the naming later)
-            garbage_predictions = [pred for pred in predictions]       
-            # Publish detection flag  (keeping this just in case we want to use it later)
+            # Publish detection flag
             detection_flag_msg = Bool()
             detection_flag_msg.data = len(garbage_predictions) > 0
             self.detection_flag_pub.publish(detection_flag_msg)
 
             # Calculate and publish centroid error (steering command)
+            steering_error = 0.0
             if len(garbage_predictions) > 0:
                 steering_error = self.calculate_centroid_error(garbage_predictions)
                 self.centroid_error.data = steering_error
                 self.centroid_error_publisher.publish(self.centroid_error)
 
-            # Process each garbage detection
+            # Calculate and publish width information (replaces depth)
+            if len(garbage_predictions) > 0:
+                width_value = self.calculate_representative_width(garbage_predictions)
+                self.width_msg.data = width_value
+                self.width_pub.publish(self.width_msg)
+
+            # Process each garbage detection for visualization
             for pred in garbage_predictions:
-                # Publish coordinates
-                #self.publish_coordinates(pred, depth)
-                
                 # Draw bounding box on frame
-                self.draw_detection(frame, pred, depth)
+                self.draw_detection(frame, pred)
 
             # Draw steering visualization
             if len(garbage_predictions) > 0:
                 self.draw_steering_visualization(frame, garbage_predictions)
 
-            # Publish annotated image
+            # Display frame for debugging
+            cv2.imshow("Frame", frame)
+            cv2.waitKey(1)
             
-            
-            # Publish depth image
-            if depth is not None:
-               for pred in predictions:
-                    x = int(pred.x)
-                    y = int(pred.y)
-
-                    if 0 <= y < depth.shape[0] and 0 <= x < depth.shape[1]:
-                        object_depth = depth[y, x]  # Access depth at center of bounding box
-                        print(f"{pred.class_name} detected at depth: {object_depth}")
-                    else:
-                        print("Object center is out of bounds")
-
             # Log performance
             t = time.time() - t0
             fps = 1/t if t > 0 else 0
-            self.get_logger().info(f'FPS: {fps:.2f}, Garbage detections: {len(garbage_predictions)}, Steering error: {steering_error if len(garbage_predictions) > 0 else 0.0:.3f}')
+            self.get_logger().info(f'FPS: {fps:.2f}, Valid garbage detections: {len(garbage_predictions)}, Steering error: {steering_error:.3f}')
 
         except Exception as e:
             self.get_logger().error(f'Detection error: {str(e)}')
+
+    def calculate_representative_width(self, predictions):
+        """
+        Calculate representative width for obstacle detection
+        Uses the largest width among all detections as the representative value
+        """
+        if not predictions:
+            return 0.0
+            
+        # Get the largest width (closest/most significant object)
+        max_width = max(pred.width for pred in predictions)
+        
+        # Log width information
+        self.get_logger().info(f'Representative width: {max_width:.1f} pixels (threshold: {self.width_threshold:.1f})')
+        
+        return float(max_width)
 
     def calculate_centroid_error(self, predictions):
         """
@@ -212,7 +226,7 @@ class ObjDetectionNode(Node):
         
         # Extract centroid positions from predictions
         cx_list = []
-        distances = []  # for depth-based selection
+        distances = []  # for distance-based selection
         
         for pred in predictions:
             cx = int(pred.x)  # Center x coordinate
@@ -312,37 +326,7 @@ class ObjDetectionNode(Node):
             # Highlight the target being tracked
             cv2.circle(frame, (target_x, target_y), 10, (255, 0, 0), -1)
 
-    def publish_coordinates(self, prediction, depth_frame):
-        """
-        Publish the coordinates of a detected object
-        """
-        coord_msg = PointStamped()
-        coord_msg.header.stamp = self.get_clock().now().to_msg()
-        coord_msg.header.frame_id = 'oakd_camera_frame'
-        
-        # Center coordinates of bounding box
-        coord_msg.point.x = float(prediction.x)
-        coord_msg.point.y = float(prediction.y)
-        
-        # Get depth value at detection center
-        if depth_frame is not None:
-            try:
-                # Ensure coordinates are within depth frame bounds
-                y_coord = max(0, min(int(prediction.y), depth_frame.shape[0] - 1))
-                x_coord = max(0, min(int(prediction.x), depth_frame.shape[1] - 1))
-                
-                depth_val = float(depth_frame[y_coord, x_coord])
-                coord_msg.point.z = depth_val
-                
-            except (IndexError, ValueError) as e:
-                self.get_logger().warn(f'Depth extraction error: {e}')
-                coord_msg.point.z = 0.0
-        else:
-            coord_msg.point.z = 0.0
-
-        self.detection_pub.publish(coord_msg)
-
-    def draw_detection(self, frame, prediction, depth_frame):
+    def draw_detection(self, frame, prediction):
         """
         Draw bounding box and labels on the frame
         """
@@ -355,23 +339,8 @@ class ObjDetectionNode(Node):
         # Draw bounding box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
-        # Prepare label text
-        label = f"{self.target_class_name} {prediction.confidence:.2f}"
-        
-        # Add depth information if available
-        if depth_frame is not None:
-            try:
-                y_coord = max(0, min(int(prediction.y), depth_frame.shape[0] - 1))
-                x_coord = max(0, min(int(prediction.x), depth_frame.shape[1] - 1))
-                depth_val = depth_frame[y_coord, x_coord]
-                
-                # Adjust units as needed (mm vs m)
-                if depth_val > 1000:  # Likely in mm
-                    label += f" {depth_val/1000.0:.2f}m"
-                else:  # Likely in m
-                    label += f" {depth_val:.2f}m"
-            except (IndexError, ValueError):
-                pass
+        # Prepare label text with width information
+        label = f"{self.target_class_name} {prediction.confidence:.2f} W:{prediction.width:.0f}px"
         
         # Draw label background
         label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
@@ -393,27 +362,6 @@ class ObjDetectionNode(Node):
             self.image_pub.publish(image_msg)
         except Exception as e:
             self.get_logger().error(f'Image publishing error: {str(e)}')
-
-    def publish_depth(self, obj_depth):    
-        """
-        Publish depth image
-        """
-        if obj_depth is None:
-            self.get_logger().warn("No depth frame available")
-            return 
-        try:
-
-            if obj_depth.dtype != np.float32:
-                obj_depth = obj_depth / 1000.0
-                #cast to float32 if needed
-                obj_depth = obj_depth.astype(np.float32)
-
-            depth_point_msg = Float32()
-            depth_point_msg.data = obj_depth
-
-            self.depth_pub.publish(depth_point_msg)
-        except Exception as e:
-            self.get_logger().error(f'Depth publishing error: {str(e)}')
 
 
 def main(args=None):
