@@ -14,7 +14,7 @@ NODE_NAME = 'lane_guidance_node'
 CENTROID_TOPIC_NAME = '/centroid'
 ACTUATOR_TOPIC_NAME = '/cmd_vel'
 OBJ_CENTROID_TOPIC_NAME = '/object_detections/centroid'
-DEPTH_TOPIC_NAME = '/object_detections/depth'  # Depth topic from object detection node
+WIDTH_TOPIC_NAME = '/object_detections/depth'  # Width topic from object detection node (keeping same name for compatibility)
 
 class PathPlanner(Node):
     def __init__(self):
@@ -34,16 +34,16 @@ class PathPlanner(Node):
             10
         )
         
-        # Subscribe to depth topic for obstacle detection
-        self.depth_subscriber = self.create_subscription(
+        # Subscribe to width topic for obstacle detection (renamed from depth)
+        self.width_subscriber = self.create_subscription(
             Float32,
-            DEPTH_TOPIC_NAME,
-            self.depth_callback,
+            WIDTH_TOPIC_NAME,
+            self.width_callback,
             10
         )
         
         self.get_logger().info(f'Subscribed to topic: {self.topic_to_use}')
-        self.get_logger().info(f'Subscribed to depth topic: {DEPTH_TOPIC_NAME}')
+        self.get_logger().info(f'Subscribed to width topic: {WIDTH_TOPIC_NAME}')
 
         # Default actuator values
         self.declare_parameters(
@@ -58,15 +58,15 @@ class PathPlanner(Node):
                 ('min_throttle', 0.2),
                 ('max_right_steering', 1.0),
                 ('max_left_steering', -1.0),
-                ('depth_threshold', 0.2),  # meters - stop if obstacle closer than this
-                ('sweep_duration', 5.0),   # seconds to run servo sweeper
-                ('resume_delay', 1.2),     # seconds to wait after sweep before resuming
-                ('turn_speed', 0.5),       # angular velocity for turns (rad/s)
-                ('forward_speed', 0.15),   # linear velocity for forward movement
-                ('reverse_speed', -0.15),  # linear velocity for reverse movement
-                ('turn_angle_deg', 80.0),  # turn angle in degrees
-                ('forward_distance', 0.4), # forward distance in meters
-                ('reverse_distance', 0.4), # reverse distance in meters  
+                ('width_threshold', 200.0),    # pixels - stop if obstacle width exceeds this (changed from depth_threshold)
+                ('sweep_duration', 5.0),       # seconds to run servo sweeper
+                ('resume_delay', 1.2),         # seconds to wait after sweep before resuming
+                ('turn_speed', 0.5),           # angular velocity for turns (rad/s)
+                ('forward_speed', 0.15),       # linear velocity for forward movement
+                ('reverse_speed', -0.15),      # linear velocity for reverse movement
+                ('turn_angle_deg', 80.0),      # turn angle in degrees
+                ('forward_distance', 0.4),     # forward distance in meters
+                ('reverse_distance', 0.4),     # reverse distance in meters  
                 ('final_forward_distance', 0.34), # final forward distance in meters
             ])
         self.Kp = self.get_parameter('Kp_steering').value # between [0,1]
@@ -79,8 +79,8 @@ class PathPlanner(Node):
         self.max_right_steering = self.get_parameter('max_right_steering').value # between [-1,1]
         self.max_left_steering = self.get_parameter('max_left_steering').value # between [-1,1]
         
-        # Obstacle detection parameters
-        self.depth_threshold = self.get_parameter('depth_threshold').value
+        # Obstacle detection parameters (changed from depth to width)
+        self.width_threshold = self.get_parameter('width_threshold').value
         self.sweep_duration = self.get_parameter('sweep_duration').value
         self.resume_delay = self.get_parameter('resume_delay').value
         
@@ -108,14 +108,14 @@ class PathPlanner(Node):
         self.integral_error = 0 # integral error term for steering
         self.integral_max = 1E-8
         
-        # Obstacle detection variables
-        self.obstacle_too_close = False  # State: is there currently an obstacle within danger threshold
+        # Obstacle detection variables (changed from depth to width)
+        self.obstacle_too_large = False  # State: is there currently an obstacle with width exceeding threshold
         self.is_sweeping = False
         self.is_avoiding = False  # State: currently executing avoidance maneuver
         self.avoidance_step = 0   # Current step in avoidance sequence
         self.avoidance_start_time = None
         self.sweep_process = None
-        self.last_depth_value = None
+        self.last_width_value = None  # Changed from last_depth_value
         self.sweep_start_time = None
         
         # Timer for checking sweep completion and avoidance maneuvers
@@ -131,7 +131,7 @@ class PathPlanner(Node):
             f'\nmin_throttle: {self.min_throttle}'
             f'\nmax_right_steering: {self.max_right_steering}'
             f'\nmax_left_steering: {self.max_left_steering}'
-            f'\ndepth_threshold: {self.depth_threshold}'
+            f'\nwidth_threshold: {self.width_threshold}'
             f'\nsweep_duration: {self.sweep_duration}'
             f'\nfinal_forward_distance: {self.final_forward_distance}'
             f'\nturn_duration: {self.turn_duration:.2f}s'
@@ -190,47 +190,47 @@ class PathPlanner(Node):
         """Temporary callback to test if data is being received"""
         self.test_data_received = True
 
-    def depth_callback(self, msg):
-        """Process depth value for obstacle detection"""
+    def width_callback(self, msg):
+        """Process width value for obstacle detection (changed from depth_callback)"""
         try:
-            # Extract the single depth value from Float32 message
-            depth_value = msg.data
-            self.last_depth_value = depth_value
+            # Extract the single width value from Float32 message
+            width_value = msg.data
+            self.last_width_value = width_value
             
-            # Check if obstacle is too close
-            self.check_for_obstacles(depth_value)
+            # Check if obstacle is too large (width exceeds threshold)
+            self.check_for_obstacles(width_value)
             
         except Exception as e:
-            self.get_logger().error(f'Error processing depth value: {str(e)}')
+            self.get_logger().error(f'Error processing width value: {str(e)}')
 
-    def check_for_obstacles(self, depth_value):
-        """Check if there's an obstacle too close based on single depth value"""
-        if depth_value is None:
+    def check_for_obstacles(self, width_value):
+        """Check if there's an obstacle too large based on width value (changed from depth logic)"""
+        if width_value is None:
             return
             
-        # Filter out invalid depth values (typically 0 or negative values)
-        if depth_value <= 0 or np.isnan(depth_value) or np.isinf(depth_value):
+        # Filter out invalid width values (typically 0 or negative values)
+        if width_value <= 0 or np.isnan(width_value) or np.isinf(width_value):
             return
         
-        # Check if obstacle is too close (under threshold)
-        obstacle_too_close = depth_value < self.depth_threshold
+        # Check if obstacle is too large (width exceeds threshold) - opposite logic from depth
+        obstacle_too_large = width_value > self.width_threshold
         
-        # Log depth information periodically
-        if hasattr(self, '_last_depth_log_time'):
-            if time.time() - self._last_depth_log_time > 2.0:  # Log every 2 seconds
-                self.get_logger().info(f'Object depth: {depth_value:.2f}m, Threshold: {self.depth_threshold}m')
-                self._last_depth_log_time = time.time()
+        # Log width information periodically
+        if hasattr(self, '_last_width_log_time'):
+            if time.time() - self._last_width_log_time > 2.0:  # Log every 2 seconds
+                self.get_logger().info(f'Object width: {width_value:.1f}px, Threshold: {self.width_threshold:.1f}px')
+                self._last_width_log_time = time.time()
         else:
-            self._last_depth_log_time = time.time()
+            self._last_width_log_time = time.time()
         
-        # Handle obstacle too close state changes
-        if obstacle_too_close and not self.obstacle_too_close and not self.is_sweeping:
-            self.get_logger().warn(f'Obstacle too close at {depth_value:.2f}m! Stopping and initiating sweep.')
-            self.obstacle_too_close = True
+        # Handle obstacle too large state changes
+        if obstacle_too_large and not self.obstacle_too_large and not self.is_sweeping:
+            self.get_logger().warn(f'Obstacle too large at {width_value:.1f}px! Stopping and initiating sweep.')
+            self.obstacle_too_large = True
             self.start_servo_sweep()
-        elif not obstacle_too_close and self.obstacle_too_close and not self.is_sweeping:
-            self.get_logger().info('Obstacle moved away or path clear, resuming normal operation.')
-            self.obstacle_too_close = False
+        elif not obstacle_too_large and self.obstacle_too_large and not self.is_sweeping:
+            self.get_logger().info('Obstacle became smaller or path clear, resuming normal operation.')
+            self.obstacle_too_large = False
 
     def start_servo_sweep(self):
         """Start the servo sweeper node"""
@@ -371,15 +371,15 @@ class PathPlanner(Node):
         self.is_avoiding = False
         self.avoidance_step = 0
         self.avoidance_start_time = None
-        self.obstacle_too_close = False  # Clear obstacle state
+        self.obstacle_too_large = False  # Clear obstacle state (changed from obstacle_too_close)
         
         # Wait briefly before resuming normal operation
         time.sleep(self.resume_delay)
 
     def controller(self, data):
-        # Only stop if obstacle is TOO CLOSE, currently sweeping, or executing avoidance maneuver
-        # Continue normal driving even when objects are detected at safe distances
-        if self.obstacle_too_close or self.is_sweeping or self.is_avoiding:
+        # Only stop if obstacle is TOO LARGE, currently sweeping, or executing avoidance maneuver
+        # Continue normal driving even when small objects are detected
+        if self.obstacle_too_large or self.is_sweeping or self.is_avoiding:
             # If we're avoiding, the avoidance logic handles motor control
             if not self.is_avoiding:
                 self.twist_cmd.linear.x = self.zero_throttle
@@ -387,7 +387,7 @@ class PathPlanner(Node):
                 self.twist_publisher.publish(self.twist_cmd)
             return
         
-        # Normal PID control - drives normally regardless of distant object detection
+        # Normal PID control - drives normally regardless of small object detection
         # setting up PID control
         self.ek = data.data
 
@@ -441,7 +441,7 @@ class PathPlanner(Node):
         
         # Reset all states
         self.is_avoiding = False
-        self.obstacle_too_close = False
+        self.obstacle_too_large = False  # Changed from obstacle_too_close
 
 
 def main(args=None):
